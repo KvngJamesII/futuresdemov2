@@ -58,16 +58,14 @@ function generateSmsId(sms) {
 
 // Extract OTP from message
 function extractOTP(message) {
-    // Common OTP patterns: 4-8 digit numbers
+    // Common OTP patterns: looking for codes with hyphens or spaces too
     const otpPatterns = [
-        /\b(\d{6})\b/,  // 6 digit
-        /\b(\d{4})\b/,  // 4 digit
-        /\b(\d{5})\b/,  // 5 digit
-        /\b(\d{7})\b/,  // 7 digit
-        /\b(\d{8})\b/,  // 8 digit
-        /code[:\s]+(\d+)/i,
-        /otp[:\s]+(\d+)/i,
-        /pin[:\s]+(\d+)/i
+        /code[:\s]+([0-9-]+)/i,  // "code 461-731" or "code: 123456"
+        /otp[:\s]+([0-9-]+)/i,   // "otp 461-731"
+        /pin[:\s]+([0-9-]+)/i,   // "pin 461-731"
+        /\b(\d{3}-\d{3})\b/,     // Format like 461-731
+        /\b(\d{6,8})\b/,         // 6-8 digit continuous
+        /\b(\d{4,5})\b/          // 4-5 digit
     ];
 
     for (const pattern of otpPatterns) {
@@ -96,16 +94,27 @@ async function sendSmsToGroup(sms) {
         const otp = extractOTP(sms.message);
         const maskedNumber = maskPhoneNumber(sms.num);
         
-        let message = '🔔 *New OTP Received*\n\n';
-        message += `📤 *Sender:* ${sms.cli}\n\n`;
-        message += `📱 *Number:* \`${maskedNumber}\`\n\n`;
+        let message = '━━━━━━━━━━━━━━━━━━\n';
+        message += '🔔 *New OTP Received*\n';
+        message += '━━━━━━━━━━━━━━━━━━\n\n';
+        
+        message += `📤 *Sender:* ${sms.cli}\n`;
+        message += `━━━━━━━━━━━━━━━━━━\n\n`;
+        
+        message += `📱 *Number:* \`${maskedNumber}\`\n`;
+        message += `━━━━━━━━━━━━━━━━━━\n\n`;
         
         if (otp) {
-            message += `🔑 *OTP:* \`${otp}\`\n\n`;
+            message += `🔑 *OTP:* \`${otp}\`\n`;
+            message += `━━━━━━━━━━━━━━━━━━\n\n`;
         }
         
-        message += `📩 *Message:*\n>${sms.message.split('\n').join('\n>')}\n\n`;
-        message += `🕐 *Time:* ${sms.dt}`;
+        message += `📩 *Message:*\n`;
+        message += `\`\`\`\n${sms.message}\n\`\`\`\n`;
+        message += `━━━━━━━━━━━━━━━━━━\n\n`;
+        
+        message += `🕐 *Time:* ${sms.dt}\n`;
+        message += '━━━━━━━━━━━━━━━━━━';
 
         await bot.sendMessage(GROUP_ID, message, {
             parse_mode: 'Markdown'
