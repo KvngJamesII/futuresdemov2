@@ -10,12 +10,16 @@ const API_TOKEN = 'QlZSNEVBcHJHbIuGSoxYZVZlk4iFamd1U2lYU0iLk4hfjnFCSXA=';
 const API_URL = 'http://51.77.216.195/crapi/dgroup/viewstats';
 const POLL_INTERVAL = 5000; // Check every 5 seconds
 const SEEN_IDS_FILE = path.join(__dirname, 'seen_sms_ids.json');
+const CHANNELS_FILE = path.join(__dirname, 'channels.json');
 
 // Initialize bot
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // Store seen SMS IDs
 let seenSmsIds = new Set();
+
+// Store channel IDs
+let channels = [GROUP_ID]; // Default group
 
 // Bot status
 let isConnected = false;
@@ -44,6 +48,30 @@ function saveSeenIds() {
         fs.writeFileSync(SEEN_IDS_FILE, JSON.stringify(ids, null, 2));
     } catch (error) {
         console.error('Error saving seen IDs:', error);
+    }
+}
+
+// Load channels from file
+function loadChannels() {
+    try {
+        if (fs.existsSync(CHANNELS_FILE)) {
+            const data = fs.readFileSync(CHANNELS_FILE, 'utf8');
+            const loadedChannels = JSON.parse(data);
+            channels = loadedChannels;
+            console.log(`Loaded ${channels.length} channel(s)`);
+        }
+    } catch (error) {
+        console.error('Error loading channels:', error);
+        channels = [GROUP_ID];
+    }
+}
+
+// Save channels to file
+function saveChannels() {
+    try {
+        fs.writeFileSync(CHANNELS_FILE, JSON.stringify(channels, null, 2));
+    } catch (error) {
+        console.error('Error saving channels:', error);
     }
 }
 
@@ -116,13 +144,19 @@ async function sendSmsToGroup(sms) {
         message += `🕐 *Time:* ${sms.dt}\n`;
         message += '━━━━━━━━━━━━━━━━━━';
 
-        await bot.sendMessage(GROUP_ID, message, {
-            parse_mode: 'Markdown'
-        });
-        
-        console.log(`✓ Sent SMS to group: ${sms.cli} -> ${maskedNumber}`);
+        // Send to all channels
+        for (const channelId of channels) {
+            try {
+                await bot.sendMessage(channelId, message, {
+                    parse_mode: 'Markdown'
+                });
+                console.log(`✓ Sent SMS to channel ${channelId}: ${sms.cli} -> ${maskedNumber}`);
+            } catch (error) {
+                console.error(`✗ Failed to send to channel ${channelId}:`, error.message);
+            }
+        }
     } catch (error) {
-        console.error('Error sending SMS to group:', error);
+        console.error('Error sending SMS:', error);
     }
 }
 
@@ -214,9 +248,16 @@ async function sendConnectionStatus(connected) {
             ? '✅ *Bot Connected*\n\nSMS monitoring is now active. Waiting for new SMS...'
             : '❌ *Bot Disconnected*\n\nSMS monitoring is currently unavailable. Attempting to reconnect...';
 
-        await bot.sendMessage(GROUP_ID, message, {
-            parse_mode: 'Markdown'
-        });
+        // Send to all channels
+        for (const channelId of channels) {
+            try {
+                await bot.sendMessage(channelId, message, {
+                    parse_mode: 'Markdown'
+                });
+            } catch (error) {
+                console.error(`Error sending status to channel ${channelId}:`, error.message);
+            }
+        }
     } catch (error) {
         console.error('Error sending connection status:', error);
     }
@@ -248,6 +289,7 @@ ${statusEmoji} *Bot Status*
 🌐 API: ${statusText}
 🎯 Status: ${initStatus}
 📊 Tracked SMS: ${seenSmsIds.size}
+📢 Active Channels: ${channels.length}
 🕐 Last Check: ${new Date().toLocaleString()}
         `;
 
@@ -259,6 +301,124 @@ ${statusEmoji} *Bot Status*
             parse_mode: 'Markdown'
         });
     }
+});
+
+// Handle /add command (add new channel)
+bot.onText(/\/add (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const newChannelId = match[1].trim();
+    
+    // Only allow command from the main group
+    if (chatId.toString() !== GROUP_ID) {
+        await bot.sendMessage(chatId, '❌ This command can only be used in the main group.', {
+            parse_mode: 'Markdown'
+        });
+        return;
+    }
+    
+    // Check if channel already exists
+    if (channels.includes(newChannelId)) {
+        await bot.sendMessage(chatId, `⚠️ Channel \`${newChannelId}\` is already added.`, {
+            parse_mode: 'Markdown'
+        });
+        return;
+    }
+    
+    // Test if bot can send to this channel
+    try {
+        await bot.sendMessage(newChannelId, '✅ *Channel Added Successfully*\n\nThis channel will now receive SMS notifications.', {
+            parse_mode: 'Markdown'
+        });
+        
+        channels.push(newChannelId);
+        saveChannels();
+        
+        await bot.sendMessage(chatId, `✅ Channel \`${newChannelId}\` added successfully!\n\n📢 Total channels: ${channels.length}`, {
+            parse_mode: 'Markdown'
+        });
+        
+        console.log(`✓ Added channel: ${newChannelId}`);
+    } catch (error) {
+        await bot.sendMessage(chatId, `❌ Failed to add channel \`${newChannelId}\`\n\nError: ${error.message}\n\nMake sure the bot is added as admin in the channel.`, {
+            parse_mode: 'Markdown'
+        });
+        console.error(`✗ Failed to add channel ${newChannelId}:`, error.message);
+    }
+});
+
+// Handle /remove command (remove channel)
+bot.onText(/\/remove (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const channelIdToRemove = match[1].trim();
+    
+    // Only allow command from the main group
+    if (chatId.toString() !== GROUP_ID) {
+        await bot.sendMessage(chatId, '❌ This command can only be used in the main group.', {
+            parse_mode: 'Markdown'
+        });
+        return;
+    }
+    
+    // Check if it's the main group
+    if (channelIdToRemove === GROUP_ID) {
+        await bot.sendMessage(chatId, '❌ Cannot remove the main group!', {
+            parse_mode: 'Markdown'
+        });
+        return;
+    }
+    
+    // Check if channel exists
+    const channelIndex = channels.indexOf(channelIdToRemove);
+    if (channelIndex === -1) {
+        await bot.sendMessage(chatId, `⚠️ Channel \`${channelIdToRemove}\` is not in the list.`, {
+            parse_mode: 'Markdown'
+        });
+        return;
+    }
+    
+    // Remove channel
+    channels.splice(channelIndex, 1);
+    saveChannels();
+    
+    try {
+        await bot.sendMessage(channelIdToRemove, '👋 *Channel Removed*\n\nThis channel will no longer receive SMS notifications.', {
+            parse_mode: 'Markdown'
+        });
+    } catch (error) {
+        console.log(`Could not send removal message to ${channelIdToRemove}`);
+    }
+    
+    await bot.sendMessage(chatId, `✅ Channel \`${channelIdToRemove}\` removed successfully!\n\n📢 Total channels: ${channels.length}`, {
+        parse_mode: 'Markdown'
+    });
+    
+    console.log(`✓ Removed channel: ${channelIdToRemove}`);
+});
+
+// Handle /list command (list all channels)
+bot.onText(/\/list/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    // Only allow command from the main group
+    if (chatId.toString() !== GROUP_ID) {
+        await bot.sendMessage(chatId, '❌ This command can only be used in the main group.', {
+            parse_mode: 'Markdown'
+        });
+        return;
+    }
+    
+    let message = '📢 *Active Channels*\n\n';
+    
+    channels.forEach((channel, index) => {
+        const isMain = channel === GROUP_ID;
+        message += `${index + 1}. \`${channel}\`${isMain ? ' *(Main)*' : ''}\n`;
+    });
+    
+    message += `\n*Total:* ${channels.length} channel(s)`;
+    
+    await bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown'
+    });
 });
 
 // Handle /clear command (admin only - clears seen IDs)
@@ -292,6 +452,7 @@ function startPolling() {
 
 // Initialize
 loadSeenIds();
+loadChannels();
 startPolling();
 
 // Handle graceful shutdown
